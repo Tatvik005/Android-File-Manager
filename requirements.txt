@@ -1,0 +1,3 @@
+# Android File Manager Requirements
+PyQt6>=6.6.0
+pyinstaller>=6.2.0

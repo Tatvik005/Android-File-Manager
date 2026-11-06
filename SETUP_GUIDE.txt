@@ -1,0 +1,192 @@
+================================================================================
+                    ANDROID FILE MANAGER FOR MACOS - SETUP GUIDE
+================================================================================
+
+A modern, standalone graphical Android File Manager for macOS Apple Silicon & Intel.
+Built with Python 3, PyQt6, and Android Debug Bridge (ADB).
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+1. System Requirements & Prerequisites
+2. Step 1: Installing Homebrew & ADB
+3. Step 2: Preparing Your Android Phone (USB Debugging)
+4. Step 3: Setting Up the Python Environment
+5. Step 4: Running the App from Source
+6. Step 5: Building the Standalone macOS .app Bundle
+7. Keyboard Shortcuts & Navigation Guide
+8. Troubleshooting Common Issues
+
+
+================================================================================
+1. SYSTEM REQUIREMENTS & PREREQUISITES
+================================================================================
+- macOS 12.0 (Monterey) or newer (macOS Sonoma & Sequoia fully supported)
+- Apple Silicon (M1/M2/M3/M4) or Intel Mac
+- Python 3.10, 3.11, 3.12, or 3.13
+- Android phone with Android 8.0 or newer
+- USB-C or USB-A data cable (ensure the cable supports data, not charging only)
+
+
+================================================================================
+2. STEP 1: INSTALLING HOMEBREW & ADB
+================================================================================
+The app communicates with your Android device via Android Debug Bridge (ADB).
+
+1. Check if Homebrew is installed:
+   Open Terminal and run:
+     brew --version
+
+   If not installed, install Homebrew with:
+     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+2. Install Android Platform Tools (which includes ADB):
+     brew install android-platform-tools
+
+3. Verify ADB is installed and reachable:
+     adb version
+
+   You should see output similar to:
+     Android Debug Bridge version 1.0.41
+
+
+================================================================================
+3. STEP 2: PREPARING YOUR ANDROID PHONE (USB DEBUGGING)
+================================================================================
+To allow your Mac to access Android storage:
+
+1. Enable Developer Options:
+   - On your Android phone, go to: Settings > About Phone
+   - Find "Build Number" (on Samsung: Settings > About phone > Software information > Build number)
+   - Tap "Build Number" 7 times rapidly until a prompt says "You are now a developer!"
+
+2. Enable USB Debugging:
+   - Go to: Settings > System > Developer Options (or Settings > Developer Options)
+   - Toggle "USB Debugging" to ON.
+
+3. Connect Phone to Mac via USB:
+   - Plug your phone into your Mac using a USB data cable.
+   - On the phone, if prompted for USB configuration, select "File Transfer / MTP"
+     or "Charging only" (both work as long as USB Debugging is active).
+
+4. Authorize Your Mac:
+   - When plugged in, your phone screen will display a popup:
+     "Allow USB debugging? The computer's RSA key fingerprint is..."
+   - Check the box: [x] "Always allow from this computer"
+   - Tap "Allow"
+
+5. Verify Connection in Terminal:
+     adb devices -l
+
+   You should see your device listed as "device" (e.g., "RZCY512P8PT device ...").
+   If it says "unauthorized", unlock your phone screen and tap "Allow".
+
+
+================================================================================
+4. STEP 3: SETTING UP THE PYTHON ENVIRONMENT
+================================================================================
+1. Open Terminal and navigate to this repository folder:
+     cd /path/to/android-file-manager
+
+2. Create a clean Python virtual environment:
+     python3 -m venv .venv
+
+3. Activate the virtual environment:
+     source .venv/bin/activate
+
+4. Install the required dependencies:
+     pip install -r requirements.txt
+
+   Dependencies installed:
+   - PyQt6 (GUI framework)
+   - pyinstaller (for compiling the standalone macOS .app bundle)
+
+
+================================================================================
+5. STEP 4: RUNNING THE APP FROM SOURCE
+================================================================================
+With the virtual environment active, simply run:
+     python main.py
+
+The dual-pane explorer window will launch:
+- Left Pane: Your Mac Local Files (defaults to ~ Home directory)
+- Right Pane: Android Internal Storage (/storage/emulated/0)
+- Bottom Status Bar: Live USB connection state indicator
+
+
+================================================================================
+6. STEP 5: BUILDING THE STANDALONE MACOS .APP BUNDLE
+================================================================================
+To compile the application into a standalone native macOS application bundle
+with the custom 3D folder icon:
+
+1. Ensure your virtual environment is active:
+     source .venv/bin/activate
+
+2. Execute the build script:
+     ./build_app.sh
+
+3. The script will:
+   - Compile all Python files, PyQt6 runtime, and assets using PyInstaller
+   - Attach the high-resolution macOS multi-layer icon (AppIcon.icns)
+   - Install the final application bundle to your Desktop:
+       ~/Desktop/Android File Manager.app
+   - Clean up temporary build artifacts to avoid duplicates in Launchpad
+
+4. Launch the app directly from your Desktop or Terminal:
+     open "$HOME/Desktop/Android File Manager.app"
+
+
+================================================================================
+7. KEYBOARD SHORTCUTS & NAVIGATION GUIDE
+================================================================================
+Opening & Navigation:
+- Return / Enter           : Open highlighted folder or view file
+- Double-Click             : Open clicked folder or view file
+- Command + Down (Cmd+Down): Open selected folder or view file
+- Command + Up (Cmd+Up)    : Navigate up to parent folder
+- Backspace                : Navigate up to parent folder
+- Command + [ (or Opt+Left): Go back in directory history
+- Command + ] (or Opt+Right: Go forward in directory history
+
+Preview & Viewing (Without Copying to Mac):
+- Spacebar                 : Quick Look preview of selected file (PDF, Image, Video, Audio)
+- Double-Click File        : Opens file directly in macOS Default Viewer (Preview, QuickTime, etc.)
+
+File Management:
+- Shift + Command + N      : Create New Folder in active pane
+- Delete / Backspace       : Delete selected items (with confirmation)
+- Command + Left           : Copy selected Android items to Mac (Pull)
+- Command + Right          : Copy selected Mac items to Android (Push)
+- Right-Click Context Menu : Access Open, Quick Look, Copy Remote Path, Rename, Delete
+
+
+================================================================================
+8. TROUBLESHOOTING COMMON ISSUES
+================================================================================
+
+Issue: "No Android Device Found"
+- Ensure your USB cable supports data transfer (some cheap cables are charging-only).
+- Make sure phone screen is unlocked.
+- Verify USB debugging is toggled ON under Developer Options.
+- Try running: adb kill-server && adb start-server && adb devices
+
+Issue: "Device Unauthorized"
+- Unlock your phone screen.
+- A popup will prompt: "Allow USB debugging?".
+- Check "Always allow from this computer" and tap "Allow".
+- In the app, click the "Refresh All" button.
+
+Issue: "Permission Denied" on Android Directories
+- On Android 11+, Google restricts access to /storage/emulated/0/Android/data
+  due to scoped storage policies. All user media (DCIM, Download, Documents,
+  Pictures, Music, Movies, custom folders) are fully accessible.
+
+Issue: Duplicate App Showing in Launchpad / App Switcher
+- Run:
+    /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -kill -r -domain local -domain system -domain user
+- This rebuilds the macOS LaunchServices cache and clears duplicate registrations.
+
+================================================================================
+Happy file managing!
+================================================================================
