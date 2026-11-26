@@ -33,7 +33,8 @@ class TestUIComponents(unittest.TestCase):
     def test_mac_pane_initialization(self):
         # Mac pane should default to user home and contain items
         self.assertGreater(self.window.mac_pane.model.rowCount(), 0)
-        self.assertTrue(self.window.mac_pane.path_bar.path_edit.text().startswith("/"))
+        self.assertTrue(self.window.mac_pane.path_bar.current_path.startswith("/"))
+        self.assertEqual(self.window.mac_pane.path_bar.path_edit.text(), "~")
 
     def test_state_debugging_disabled(self):
         dev = DeviceInfo(serial="RZCY512P8PT", state=ConnectionState.DEBUGGING_DISABLED, model="Samsung Galaxy")
@@ -130,6 +131,40 @@ class TestUIComponents(unittest.TestCase):
         with patch.object(self.window, "load_android_directory") as mock_load:
             self.window.on_return_open_shortcut()
             mock_load.assert_called_once_with("/storage/emulated/0/DCIM")
+
+    def test_mac_volume_helpers(self):
+        from ui_components import get_mac_volumes, normalize_local_path, format_display_local_path
+        from pathlib import Path
+
+        # 1. format_display_local_path
+        home = str(Path.home())
+        self.assertEqual(format_display_local_path(home), "~")
+        self.assertEqual(format_display_local_path(f"{home}/Downloads"), "~/Downloads")
+        self.assertEqual(format_display_local_path("/Volumes"), "📂 All Volumes")
+        self.assertIn("SD", format_display_local_path("/Volumes/SD"))
+
+        # 2. normalize_local_path
+        self.assertEqual(normalize_local_path("~"), home)
+        self.assertEqual(normalize_local_path("~/Downloads"), f"{home}/Downloads")
+        self.assertEqual(normalize_local_path("/Volumes"), "/Volumes")
+        self.assertEqual(normalize_local_path("Volumes"), "/Volumes")
+
+        # 3. get_mac_volumes returns list of tuples
+        vols = get_mac_volumes()
+        self.assertIsInstance(vols, list)
+        for label, path, is_rem in vols:
+            self.assertTrue(path.startswith("/Volumes/"))
+            self.assertTrue(is_rem)
+
+    def test_mac_pane_drives_button_and_shortcuts(self):
+        # Mac pane should have a btn_pane_drives button
+        self.assertTrue(hasattr(self.window.mac_pane, "btn_pane_drives"))
+        self.assertEqual(self.window.mac_pane.btn_pane_drives.text(), "💾 Drives")
+
+        # Mac pane shortcuts should include Volumes
+        pill_texts = [b.text() for b in self.window.mac_pane._shortcut_buttons]
+        self.assertTrue(any("Volumes" in t for t in pill_texts))
+        self.assertTrue(any("Home" in t for t in pill_texts))
 
 
 if __name__ == "__main__":

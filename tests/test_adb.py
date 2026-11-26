@@ -73,6 +73,49 @@ class TestAdbManager(unittest.TestCase):
             ],
         )
 
+    def test_device_info_wireless_property(self):
+        from adb_manager import DeviceInfo
+        usb_dev = DeviceInfo(serial="RF8M123456", state=ConnectionState.CONNECTED, model="Galaxy S24")
+        self.assertFalse(usb_dev.is_wireless)
+        self.assertEqual(usb_dev.display_name, "Galaxy S24 (RF8M123456)")
+
+        wifi_dev = DeviceInfo(serial="192.168.1.50:5555", state=ConnectionState.CONNECTED, model="Galaxy S24")
+        self.assertTrue(wifi_dev.is_wireless)
+        self.assertIn("📶", wifi_dev.display_name)
+
+    def test_connect_wireless_validation(self):
+        ok, msg = self.mgr.connect_wireless("")
+        self.assertFalse(ok)
+        self.assertIn("empty", msg.lower())
+
+    def test_pair_wireless_validation(self):
+        ok, msg = self.mgr.pair_wireless("", "")
+        self.assertFalse(ok)
+
+    def test_storage_volume_dataclass(self):
+        from adb_manager import StorageVolume
+        vol = StorageVolume(name="SD Card (1234-5678)", path="/storage/1234-5678", is_removable=True, is_primary=False, uuid="1234-5678")
+        self.assertTrue(vol.is_removable)
+        self.assertFalse(vol.is_primary)
+        self.assertEqual(vol.path, "/storage/1234-5678")
+
+    def test_get_storage_volumes(self):
+        vols = self.mgr.get_storage_volumes()
+        self.assertGreater(len(vols), 0)
+        self.assertTrue(any(v.is_primary for v in vols))
+
+    def test_normalize_remote_path_sd_card(self):
+        from adb_manager import normalize_remote_path
+        self.assertEqual(normalize_remote_path("SD Card (1234-5678) / DCIM"), "/storage/1234-5678/DCIM")
+        self.assertEqual(normalize_remote_path("SD Card"), "/storage")
+        self.assertEqual(normalize_remote_path("/storage"), "/storage")
+        self.assertEqual(normalize_remote_path("/storage/1234-5678"), "/storage/1234-5678")
+
+    def test_format_display_remote_path_sd_card(self):
+        from adb_manager import format_display_remote_path
+        self.assertEqual(format_display_remote_path("/storage/1234-5678/DCIM"), "SD Card (1234-5678) / DCIM")
+        self.assertEqual(format_display_remote_path("/storage"), "All Storage Volumes")
+
 
 if __name__ == "__main__":
     unittest.main()

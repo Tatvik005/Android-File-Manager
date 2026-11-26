@@ -1,0 +1,227 @@
+================================================================================
+          ANDROID FILE MANAGER - INSTALLATION & MIGRATION GUIDE
+                     FOR YOUR NEW MACBOOK AIR
+================================================================================
+
+This "shift" folder contains everything you need to run, install, or develop
+the Android File Manager application on your new Mac.
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+1. What Is Inside This Folder
+2. METHOD 1: The Quickest Way (Pre-Compiled Standalone App)
+3. METHOD 2: The One-Click Automated Installer (setup_new_mac.sh)
+4. METHOD 3: Running & Developing from Source (Python)
+5. Preparing Your Android Phone (USB Debugging)
+6. Important: macOS Gatekeeper Fix ("App is damaged" error)
+7. Complete Keyboard Shortcuts Reference
+8. Troubleshooting Common Issues
+
+
+================================================================================
+1. WHAT IS INSIDE THIS FOLDER
+================================================================================
+- Android File Manager.app : Standalone precompiled macOS application bundle.
+                            Ready to run immediately without Python!
+- setup_new_mac.sh         : Automated shell installer script for new Macs.
+- HOW_TO_INSTALL.txt       : This instruction file.
+- README.md                : Full markdown documentation with feature details.
+- main.py & python files   : Complete source code (PyQt6 + ADB).
+- requirements.txt         : Python dependencies for development.
+- build_app.sh             : Script to recompile the .app bundle anytime.
+- AppIcon.icns & assets    : High-resolution custom macOS application icons.
+- tests/                   : Automated test suite.
+
+
+================================================================================
+2. METHOD 1: THE QUICKEST WAY (PRE-COMPILED APP - NO PYTHON NEEDED)
+================================================================================
+If you just want to run the application like any normal Mac app:
+
+Step 1: Install ADB on your new Mac
+------------------------------------
+Open Terminal on your new Mac and run:
+    brew install android-platform-tools
+
+(If you don't have Homebrew installed yet, install it by pasting this in Terminal:
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+then run `brew install android-platform-tools`).
+
+Step 2: Copy the App
+--------------------
+Drag or copy "Android File Manager.app" from this folder to your:
+    /Applications folder
+    (or directly onto your Desktop).
+
+Step 3: Clear macOS Transfer Quarantine (Crucial!)
+--------------------------------------------------
+Because you transferred the app from another computer, macOS Gatekeeper may tag
+it with a quarantine attribute. Open Terminal and run this one command:
+
+    xattr -cr "/Applications/Android File Manager.app"
+    (or if on Desktop: xattr -cr "$HOME/Desktop/Android File Manager.app")
+
+Step 4: Launch and Enjoy!
+-------------------------
+Double-click "Android File Manager" in your Applications or Desktop.
+Connect your phone via USB and you are ready to manage files!
+
+
+================================================================================
+3. METHOD 2: THE ONE-CLICK AUTOMATED INSTALLER (setup_new_mac.sh)
+================================================================================
+We have included an automated setup script that does all the steps above for you.
+
+1. Open Terminal on your new Mac.
+2. Navigate to this "shift" folder:
+     cd /path/to/shift
+   (Tip: type "cd " with a space, then drag the shift folder into Terminal and hit Return).
+
+3. Run the installer script:
+     ./setup_new_mac.sh
+
+4. The script will:
+   - Check and install Homebrew if missing
+   - Install Android Debug Bridge (ADB) automatically
+   - Clear macOS Gatekeeper quarantine attributes
+   - Offer to install the app to /Applications or Desktop
+   - Optionally configure a Python virtual environment for development
+   - Launch the application for you!
+
+
+================================================================================
+4. METHOD 3: RUNNING & DEVELOPING FROM SOURCE (PYTHON)
+================================================================================
+If you want to edit code, run from source, or recompile the app yourself:
+
+1. Open Terminal and navigate into this folder:
+     cd /path/to/shift
+
+2. Create a clean Python virtual environment:
+     python3 -m venv .venv
+
+3. Activate the virtual environment:
+     source .venv/bin/activate
+
+4. Install the required dependencies:
+     pip install -r requirements.txt
+
+5. Run the application from source:
+     python3 main.py
+
+6. To recompile into a standalone .app bundle anytime:
+     ./build_app.sh
+   (The newly compiled app will be placed directly on your Desktop).
+
+
+================================================================================
+5. PREPARING YOUR ANDROID PHONE (USB DEBUGGING)
+================================================================================
+To allow your new Mac to communicate with your phone:
+
+1. Enable Developer Options:
+   - On your phone: Settings > About Phone
+   - Tap "Build Number" 7 times rapidly until it says "You are a developer".
+     (On Samsung Galaxy: Settings > About phone > Software info > Build number).
+
+2. Enable USB Debugging:
+   - Settings > Developer Options > toggle "USB Debugging" to ON.
+
+3. Connect Phone to New Mac via USB Cable:
+   - Connect using a USB data cable (ensure it supports data transfer, not charging-only).
+   - Unlock your phone screen.
+   - A popup will appear on your phone:
+       "Allow USB debugging? The computer's RSA key fingerprint is..."
+   - Check: [x] "Always allow from this computer"
+   - Tap "Allow".
+
+4. In the Android File Manager app:
+   - The status bar at the bottom will turn green: 🟢 Connected: [Your Phone Model]
+   - Your internal storage folders (DCIM, Download, Documents, Pictures) will appear!
+
+5B. USING WIRELESS WI-FI MODE (ONE-CLICK CABLE-FREE):
+   - In Android File Manager, click the "📶 Connect Wi-Fi" button on the toolbar.
+   - Click "⚡ Switch to Wi-Fi Mode (One-Click)".
+   - The app will auto-detect your phone's Wi-Fi IP and enable wireless mode.
+   - Unplug the USB cable! You can now manage and transfer files anywhere on your Wi-Fi.
+   - Next time, you can click "📶 Connect Wi-Fi" ➔ "Connect Wirelessly" to reconnect with 1 click without ever plugging in!
+
+5C. ACCESSING EXTERNAL STORAGE & SD CARDS:
+   - Click the "💾 SD Card / Storage" button in the top action bar to view all mounted storage volumes.
+   - Or click the "💾 SD Card" shortcut pill right above the Android file list.
+   - You can also navigate up (Cmd+Up) from Internal Storage to reach "/storage" (All Storage Volumes).
+   - If you plug in an SD card or USB-C drive while the app is open, click "💾 SD Card / Storage" ➔ "Re-scan" to detect it immediately!
+
+
+================================================================================
+6. IMPORTANT: macOS GATEKEEPER FIX ("App is damaged" error)
+================================================================================
+When moving files between Macs (via AirDrop, USB flash drive, Google Drive, etc.),
+Apple's Gatekeeper security system automatically attaches an extended attribute
+called "com.apple.quarantine".
+
+If you double-click the app on your new Mac and see:
+   "Android File Manager.app is damaged and can't be opened. You should move it to the Trash."
+   OR
+   "macOS cannot verify that this app is free from malware."
+
+DO NOT MOVE IT TO TRASH. The app is completely fine—it is simply Gatekeeper's quarantine flag.
+
+Fix it in 2 seconds:
+1. Open Terminal.
+2. Run:
+     xattr -cr "/Applications/Android File Manager.app"
+   (or wherever the .app file is located).
+3. Open the app again. It will launch immediately!
+
+
+================================================================================
+7. COMPLETE KEYBOARD SHORTCUTS REFERENCE
+================================================================================
+Opening & Navigation:
+- Return / Enter            : Open selected folder or view file
+- Double-Click              : Open clicked folder or view file
+- Command + Down (Cmd+Down) : Open selected folder or view file
+- Command + Up (Cmd+Up)     : Navigate up to parent folder
+- Backspace                 : Navigate up to parent folder
+- Command + [ (or Opt+Left) : History back
+- Command + ] (or Opt+Right): History forward
+
+In-Place Preview (Without Copying to Mac):
+- Spacebar                  : Quick Look preview (photos, PDFs, videos, audio)
+- Double-Click on File      : Opens in macOS default viewer (Preview, QuickTime)
+
+File Management:
+- Shift + Command + N       : Create New Folder in active pane
+- Delete                    : Delete selected items (with confirmation)
+- Command + Left (Cmd+Left) : Copy selected Android items to Mac (Pull)
+- Command + Right (Cmd+Right): Copy selected Mac items to Android (Push)
+- Right-Click Context Menu  : Open Folder, Quick Look, Copy Path, Rename, Delete
+
+
+================================================================================
+8. TROUBLESHOOTING COMMON ISSUES
+================================================================================
+
+Issue: "No Android Device Found"
+- Check that the USB cable supports data transfer (some cheap cables are charging-only).
+- Ensure your phone screen is unlocked.
+- Make sure "USB Debugging" is turned ON in Developer Options.
+- In Terminal, test if ADB sees the device:
+    adb devices -l
+- If ADB is stuck, restart the ADB daemon:
+    adb kill-server && adb start-server
+
+Issue: "Device Unauthorized"
+- Unlock phone screen. Look for the "Allow USB debugging?" prompt.
+- Check "Always allow from this computer" and tap "Allow".
+- In the app, click the "Refresh All" button.
+
+Issue: App opens but doesn't detect phone
+- Open Terminal and run: `which adb`.
+- If it outputs nothing, run: `brew install android-platform-tools`.
+
+================================================================================
+Enjoy your Android File Manager on your new MacBook Air!
+================================================================================

@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QIcon, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
@@ -46,6 +46,10 @@ from ui_components import (
     StatusIndicator,
     TransferProgressDialog,
     UnauthorizedBanner,
+    WifiConnectDialog,
+    format_display_local_path,
+    get_mac_volumes,
+    normalize_local_path,
 )
 from workers import (
     AndroidDeleteWorker,
@@ -125,6 +129,18 @@ class MainWindow(QMainWindow):
         self.btn_new_folder.setToolTip("Create a new folder in current Android directory (⇧⌘N)")
         self.btn_new_folder.clicked.connect(self.on_new_android_folder)
         action_bar_layout.addWidget(self.btn_new_folder)
+
+        self.btn_storage = QPushButton("💾 Drives & Storage")
+        self.btn_storage.setObjectName("secondaryActionBtn")
+        self.btn_storage.setToolTip("Access Mac SD Card / USB drives and Android storage volumes")
+        self.btn_storage.clicked.connect(self.show_storage_menu)
+        action_bar_layout.addWidget(self.btn_storage)
+
+        self.btn_wifi = QPushButton("📶 Connect Wi-Fi")
+        self.btn_wifi.setObjectName("wifiActionBtn")
+        self.btn_wifi.setToolTip("One-click switch to wireless Wi-Fi mode or reconnect wirelessly")
+        self.btn_wifi.clicked.connect(self.show_wifi_dialog)
+        action_bar_layout.addWidget(self.btn_wifi)
 
         self.btn_guide = QPushButton("📖 USB Guide")
         self.btn_guide.setToolTip("Step-by-step guide to enable USB Debugging on your phone")
@@ -257,9 +273,19 @@ class MainWindow(QMainWindow):
         if state == ConnectionState.CONNECTED:
             self.unauth_banner.setVisible(False)
             self._unauthorized_alert_shown = False
-            self.status_device_label.setText(f"Connected: {device.display_name if device else 'Android Device'}")
+            wifi_tag = " (Wi-Fi)" if (device and device.is_wireless) else ""
+            self.status_device_label.setText(f"Connected{wifi_tag}: {device.display_name if device else 'Android Device'}")
             dev_model = device.model if device else "Android"
-            self.android_pane.title_label.setText(f"📱 {dev_model} • Internal Storage")
+            mode_desc = "Wi-Fi" if (device and device.is_wireless) else "Internal Storage"
+            self.android_pane.title_label.setText(f"📱 {dev_model} • {mode_desc}")
+
+            # Discover and configure storage volumes (Internal + SD Card)
+            try:
+                volumes = self.adb.get_storage_volumes()
+                self.android_pane.set_storage_volumes(volumes)
+            except Exception:
+                pass
+
             self.update_storage_stats()
 
             # If newly connected or previously no device, load Android Internal Storage
@@ -296,7 +322,7 @@ class MainWindow(QMainWindow):
         elif state == ConnectionState.NO_DEVICE:
             self.unauth_banner.setVisible(False)
             self._unauthorized_alert_shown = False
-            self.status_device_label.setText("No Android Device Found (Connect via USB)")
+            self.status_device_label.setText("No Android Device Found (Connect via USB or Wi-Fi)")
             self.status_storage_label.setText("")
             self.android_pane.title_label.setText("📱 Android Device (Disconnected)")
             self.android_pane.model.set_items(self.android_pane.path_bar.path_edit.text(), [])
@@ -307,6 +333,124 @@ class MainWindow(QMainWindow):
             self.status_storage_label.setText("")
 
         self.update_action_states()
+
+    def show_storage_menu(self):
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #26272e;
+                color: #ffffff;
+                border: 1px solid #3d3e4a;
+                border-radius: 8px;
+                padding: 6px;
+                font-size: 12px;
+            }
+            QMenu::item {
+                padding: 6px 14px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #3b82f6;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #3d3e4a;
+                margin: 4px 0;
+            }
+        """)
+
+        # 1. Mac External Drives & Storage (SD card, USB drives, /Volumes)
+        hdr_mac = menu.addAction("💻 Mac External Drives & Storage:")
+        hdr_mac.setEnabled(False)
+
+        mac_vols = get_mac_volumes()
+        cur_mac = self.mac_pane.current_path.rstrip("/")
+        if mac_vols:
+            for label, p, _ in mac_vols:
+                act = menu.addAction(f"{label}  ({p})")
+                act.setCheckable(True)
+                act.setChecked(cur_mac == p.rstrip("/") or cur_mac.startswith(f"{p.rstrip('/')}/"))
+                target_p = p
+                act.triggered.connect(lambda checked=False, target=target_p: self.load_mac_directory(target))
+        else:
+            act_none = menu.addAction("   (No external drives detected on Mac)")
+            act_none.setEnabled(False)
+
+        act_vols = menu.addAction("📂 Browse All Mac Volumes (/Volumes)")
+        act_vols.setCheckable(True)
+        act_vols.setChecked(cur_mac in ("/Volumes", "/Volumes/"))
+        act_vols.triggered.connect(lambda: self.load_mac_directory("/Volumes"))
+
+        act_mac_hd = menu.addAction("🖥️ Macintosh HD Root (/)")
+        act_mac_hd.setCheckable(True)
+        act_mac_hd.setChecked(cur_mac in ("/", ""))
+        act_mac_hd.triggered.connect(lambda: self.load_mac_directory("/"))
+
+        menu.addSeparator()
+
+        # 2. Android Device Storage Volumes
+        hdr_android = menu.addAction("📱 Android Storage Volumes:")
+        hdr_android.setEnabled(False)
+
+        if self.current_state == ConnectionState.CONNECTED:
+            volumes = self.adb.get_storage_volumes()
+            self.android_pane.set_storage_volumes(volumes)
+            cur_android = self.android_pane.current_path.rstrip("/")
+
+            for vol in volumes:
+                icon_prefix = "📱" if vol.is_primary else "💾"
+                size_info = f" • {vol.free_size} free" if vol.free_size else ""
+                title = f"{icon_prefix} {vol.name} ({vol.path}){size_info}"
+                act = menu.addAction(title)
+                act.setCheckable(True)
+                v_path = vol.path.rstrip("/")
+                is_active = (cur_android == v_path or cur_android.startswith(f"{v_path}/"))
+                act.setChecked(is_active)
+                target_p = vol.path
+                act.triggered.connect(lambda checked=False, target=target_p: self.load_android_directory(target))
+
+            act_all_android = menu.addAction("📂 Browse All Android Storage Roots (/storage)")
+            act_all_android.setCheckable(True)
+            act_all_android.setChecked(cur_android in ("/storage", ""))
+            act_all_android.triggered.connect(lambda: self.load_android_directory("/storage"))
+        else:
+            act_disconn = menu.addAction("   (Android device disconnected)")
+            act_disconn.setEnabled(False)
+
+        menu.addSeparator()
+        act_scan = menu.addAction("🔄 Refresh & Re-scan All Drives")
+        act_scan.triggered.connect(self.on_rescan_storage)
+
+        menu.exec(self.btn_storage.mapToGlobal(QPoint(0, self.btn_storage.height() + 2)))
+
+    def on_rescan_storage(self):
+        self.status_bar.showMessage("Scanning for Mac external drives and Android storage...", 2500)
+        self.mac_pane.rebuild_shortcuts()
+        mac_vols = get_mac_volumes()
+
+        android_info = ""
+        if self.current_state == ConnectionState.CONNECTED:
+            volumes = self.adb.get_storage_volumes()
+            self.android_pane.set_storage_volumes(volumes)
+            ext = [v for v in volumes if v.is_removable]
+            if ext:
+                android_info = f", Android SD: {ext[0].name}"
+            else:
+                android_info = ", Android: Internal Storage"
+
+        if mac_vols:
+            names = ", ".join(v[0] for v in mac_vols)
+            self.status_bar.showMessage(f"Discovered Mac external drives: {names}{android_info}", 4500)
+        else:
+            self.status_bar.showMessage(f"No external drives detected on Mac{android_info}", 4000)
+
+    def show_wifi_dialog(self):
+        dialog = WifiConnectDialog(self.adb, current_device=self.current_device, parent=self)
+        dialog.connection_succeeded.connect(self.on_wifi_connected)
+        dialog.exec()
+
+    def on_wifi_connected(self, ip_port: str):
+        self.on_refresh_device_check()
 
     def show_setup_guide(self):
         guide = SetupGuideDialog(self)
@@ -320,10 +464,13 @@ class MainWindow(QMainWindow):
             self.refresh_android()
 
     def update_storage_stats(self):
-        stats = self.adb.get_storage_stats(remote_path=ANDROID_INTERNAL_STORAGE)
+        cur_path = getattr(self, "android_pane", None) and self.android_pane.current_path or ANDROID_INTERNAL_STORAGE
+        stats = self.adb.get_storage_stats(remote_path=cur_path)
         if stats:
+            is_sd = (cur_path.startswith("/storage/") and not cur_path.startswith("/storage/emulated") and not cur_path.startswith("/storage/self"))
+            vol_label = "SD Card" if is_sd else "Internal Storage"
             self.status_storage_label.setText(
-                f"Internal Storage: {stats['free']} free of {stats['size']} ({stats['percent']} used)"
+                f"{vol_label}: {stats['free']} free of {stats['size']} ({stats['percent']} used)"
             )
         else:
             self.status_storage_label.setText("")
@@ -332,18 +479,20 @@ class MainWindow(QMainWindow):
     # Mac Directory Operations
     # -------------------------------------------------------------
     def load_mac_directory(self, path: str):
-        p = Path(path)
+        normalized = normalize_local_path(path)
+        p = Path(normalized)
         if not p.exists() or not p.is_dir():
             QMessageBox.warning(self, "Invalid Directory", f"The directory does not exist:\n{path}")
             return
 
         self.mac_pane.model.load_directory(str(p))
-        self.mac_pane.path_bar.set_path(str(p.resolve()))
+        self.mac_pane.path_bar.set_path(str(p))
         self.mac_pane.update_footer()
         self.update_action_states()
 
     def refresh_mac(self):
-        cur = self.mac_pane.path_bar.path_edit.text()
+        self.mac_pane.rebuild_shortcuts()
+        cur = self.mac_pane.path_bar.current_path
         if cur:
             self.load_mac_directory(cur)
 
@@ -386,6 +535,7 @@ class MainWindow(QMainWindow):
         self.android_pane.path_bar.set_path(path)
         self.android_pane.update_footer()
         self.update_action_states()
+        self.update_storage_stats()
         display_name = format_display_remote_path(path)
         self.status_bar.showMessage(f"Loaded {len(items)} items in {display_name}", 3000)
 
@@ -829,3 +979,4 @@ class MainWindow(QMainWindow):
         self.btn_copy_to_mac.setEnabled(is_connected and has_android_selection)
         self.btn_delete_android.setEnabled(is_connected and has_android_selection)
         self.btn_new_folder.setEnabled(is_connected)
+        self.btn_storage.setEnabled(True)

@@ -10,7 +10,12 @@ A modern, standalone graphical Android File Manager for macOS Apple Silicon & In
 
 - **Dual-Pane File Explorer**:
   - **Left Pane (Mac)**: Browse local files (defaults to your macOS Home directory `~`).
-  - **Right Pane (Android)**: Full access to Android internal storage (`/storage/emulated/0`, `DCIM`, `Download`, `Pictures`, `Documents`, `Music`, `Movies`).
+  - **Right Pane (Android)**: Full access to Internal Storage (`/storage/emulated/0`), MicroSD cards (`/storage/XXXX-XXXX`), and USB OTG drives.
+- **💾 MicroSD & External Storage Support**:
+  - 🔄 **Auto-Detection**: Dynamically scans and discovers mounted MicroSD cards and USB OTG drives (`sm list-volumes` and `/storage/*`).
+  - ⚡ **One-Click Switcher**: Switch instantly between Internal Storage and SD Card via the **"💾 SD Card / Storage"** toolbar menu or pane pills.
+  - 📂 **Full Storage Roots**: Navigate up (`⌘` + `↑`) to `/storage` to see all attached storage volumes and media.
+  - 🎯 **Context-Aware Shortcuts**: Quick folder pills (`DCIM`, `Download`, `Pictures`, etc.) automatically point to the active storage volume.
 - **In-Place File Viewing & Quick Look**:
   - 👁️ **Spacebar Quick Look**: Instant macOS Quick Look preview for photos, videos, PDFs, and audio directly from your phone.
   - ↗️ **Direct Open**: Double-click or press <kbd>Return</kbd> on any file to open it in macOS default viewer (Preview, QuickTime, TextEdit) without polluting your active working directory.
@@ -29,6 +34,10 @@ A modern, standalone graphical Android File Manager for macOS Apple Silicon & In
   - Real-time connection status indicator (🟢 Connected, 🟡 Unauthorized, 🔴 Disconnected, 🟠 Debugging Disabled).
   - Background polling via `adb devices -l` showing device model, serial number, and storage capacity.
   - Automatic detection of **"Unauthorized"** state with an actionable guidance banner.
+- **📶 Wireless Wi-Fi Connection (Cable-Free)**:
+  - ⚡ **One-Click Switch**: Plug in via USB once, click **"📶 Connect Wi-Fi"** ➔ **"⚡ Switch to Wi-Fi Mode"**, and unplug your cable!
+  - 🔗 **Direct Reconnect**: Remembers your phone's last IP for fast 1-click reconnects without a cable.
+  - 📱 **Android 11+ Cable-Free Pairing**: Pair and connect wirelessly directly from the UI without any USB cable.
 - **Native macOS Experience**:
   - Custom 3D folder squircle application icon (`AppIcon.icns`).
   - Dark mode aesthetic matching macOS Sonoma and Sequoia.

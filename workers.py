@@ -237,3 +237,103 @@ class AndroidOpenTempWorker(QThread):
             self.ready.emit(local_path, self.quick_look)
         except Exception as e:
             self.failed.emit(self.item_name, str(e))
+
+
+class WirelessWorker(QThread):
+    """
+    Worker for executing wireless connection operations asynchronously
+    so the UI never blocks during TCP/IP switching or network handshakes.
+    """
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)
+
+    OP_SWITCH_USB_TO_WIFI = "switch_usb"
+    OP_CONNECT = "connect"
+    OP_DISCONNECT = "disconnect"
+    OP_PAIR = "pair"
+
+    def __init__(
+        self,
+        adb: AdbManager,
+        operation: str,
+        serial: Optional[str] = None,
+        ip: Optional[str] = None,
+        port: int = 5555,
+        pair_code: Optional[str] = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.adb = adb
+        self.operation = operation
+        self.serial = serial
+        self.ip = ip
+        self.port = port
+        self.pair_code = pair_code
+
+    def run(self):
+        try:
+            if self.operation == self.OP_SWITCH_USB_TO_WIFI:
+                self.progress.emit("Detecting phone Wi-Fi IP address...")
+                target_ip = self.ip or self.adb.get_device_ip(self.serial)
+                if not target_ip:
+                    self.finished.emit(
+                        False,
+                        "Could not auto-detect phone IP address.\n\n"
+                        "Please verify your phone is connected to Wi-Fi, or enter its IP address manually."
+                    )
+                    return
+
+                self.progress.emit(f"Enabling wireless mode on phone (port {self.port})...")
+                ok, msg = self.adb.enable_tcpip(self.port, serial=self.serial)
+                if not ok:
+                    self.finished.emit(False, f"Failed to enable TCP mode: {msg}")
+                    return
+
+                # Wait 1.5 seconds for adbd to restart in TCP mode
+                self.progress.emit(f"Connecting wirelessly to {target_ip}:{self.port}...")
+                time.sleep(1.5)
+
+                ok, msg = self.adb.connect_wireless(target_ip, self.port)
+                if ok:
+                    self.finished.emit(
+                        True,
+                        f"🎉 Successfully connected to {target_ip}:{self.port}!\n\n"
+                        f"👉 You can now safely UNPLUG your USB cable and manage files wirelessly!"
+                    )
+                else:
+                    self.finished.emit(
+                        False,
+                        f"TCP mode enabled, but connection to {target_ip}:{self.port} failed:\n{msg}\n\n"
+                        "Check that your phone and Mac are connected to the same Wi-Fi network."
+                    )
+
+            elif self.operation == self.OP_CONNECT:
+                if not self.ip:
+                    self.finished.emit(False, "IP address is required.")
+                    return
+                self.progress.emit(f"Connecting to {self.ip}:{self.port}...")
+                ok, msg = self.adb.connect_wireless(self.ip, self.port)
+                if ok:
+                    self.finished.emit(True, f"Connected to {self.ip}:{self.port}!")
+                else:
+                    self.finished.emit(False, f"Connection failed:\n{msg}")
+
+            elif self.operation == self.OP_DISCONNECT:
+                target = f"{self.ip}:{self.port}" if self.ip else None
+                self.progress.emit("Disconnecting wireless device...")
+                ok, msg = self.adb.disconnect_wireless(target)
+                self.finished.emit(ok, msg)
+
+            elif self.operation == self.OP_PAIR:
+                if not self.ip or not self.pair_code:
+                    self.finished.emit(False, "Pairing address and 6-digit code are required.")
+                    return
+                self.progress.emit(f"Pairing with {self.ip}...")
+                ok, msg = self.adb.pair_wireless(self.ip, self.pair_code)
+                self.finished.emit(ok, msg)
+
+            else:
+                self.finished.emit(False, f"Unknown operation: {self.operation}")
+
+        except Exception as e:
+            self.finished.emit(False, f"Wireless operation error: {e}")

@@ -105,6 +105,23 @@ QPushButton#secondaryActionBtn:pressed {
     background: #065f46;
 }
 
+/* Wi-Fi Action Button - Purple/Indigo Gradient */
+QPushButton#wifiActionBtn {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #6366f1, stop:1 #4f46e5);
+    border: 1px solid #818cf8;
+    color: #ffffff;
+    font-weight: 600;
+    padding: 7px 16px;
+    border-radius: 7px;
+}
+QPushButton#wifiActionBtn:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #7579f3, stop:1 #5850ec);
+    border-color: #a5b4fc;
+}
+QPushButton#wifiActionBtn:pressed {
+    background: #3730a3;
+}
+
 /* Danger Button - Red Tint */
 QPushButton#dangerActionBtn {
     background-color: #2c1618;
@@ -323,5 +340,34 @@ QToolTip {
     border-radius: 5px;
     padding: 5px 9px;
     font-size: 11px;
+}
+
+/* Tabs */
+QTabWidget::pane {
+    border: 1px solid #2e303d;
+    background-color: #17181f;
+    border-radius: 8px;
+    top: -1px;
+}
+QTabBar::tab {
+    background-color: #20212a;
+    color: #9d9ea9;
+    border: 1px solid #2e303d;
+    border-bottom: none;
+    padding: 7px 16px;
+    font-weight: 500;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    margin-right: 3px;
+}
+QTabBar::tab:selected {
+    background-color: #17181f;
+    color: #ffffff;
+    border-color: #2e303d;
+    font-weight: 600;
+}
+QTabBar::tab:hover:!selected {
+    background-color: #282a36;
+    color: #d1d2dc;
 }
 """

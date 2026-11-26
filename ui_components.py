@@ -9,10 +9,11 @@ Enhanced macOS-style UI widgets for Android File Manager:
 - TransferProgressDialog (dialog with cancel button)
 """
 
+import os
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
-from PyQt6.QtCore import QEvent, QPoint, QRegularExpression, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QPoint, QRegularExpression, QSettings, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QKeyEvent, QPainter, QStandardItemModel
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -23,10 +24,12 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QTableView,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -36,9 +39,11 @@ from adb_manager import (
     ConnectionState,
     DeviceInfo,
     RemoteFileInfo,
+    StorageVolume,
     format_display_remote_path,
     normalize_remote_path,
 )
+from workers import WirelessWorker
 from file_models import (
     BaseFileTableModel,
     FileFilterProxyModel,
@@ -202,6 +207,341 @@ class SetupGuideDialog(QDialog):
         layout.addLayout(btn_layout)
 
 
+class WifiConnectDialog(QDialog):
+    """
+    High-end dialog for one-click USB-to-Wi-Fi switching (Method 1)
+    as well as direct wireless connection and Android 11+ pairing.
+    """
+    connection_succeeded = pyqtSignal(str)  # (ip_port)
+
+    def __init__(self, adb: Any, current_device: Optional[DeviceInfo] = None, parent=None):
+        super().__init__(parent)
+        self.adb = adb
+        self.current_device = current_device
+        self._worker: Optional[WirelessWorker] = None
+        self.settings = QSettings("AndroidFileManager", "Preferences")
+
+        self.setWindowTitle("📶 Connect Wirelessly (Wi-Fi)")
+        self.resize(560, 520)
+        self.setMinimumWidth(520)
+
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        # Header Title
+        title = QLabel("📶 Android Wireless Connection")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; color: #ffffff;")
+        layout.addWidget(title)
+
+        subtitle = QLabel(
+            "Manage and transfer your Android files without a USB cable over your local Wi-Fi network."
+        )
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("color: #9898a4; font-size: 13px;")
+        layout.addWidget(subtitle)
+
+        # Tabs Container
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+
+        # --- TAB 1: ⚡ One-Click Switch (Method 1) ---
+        tab_switch = QWidget()
+        tab_switch_layout = QVBoxLayout(tab_switch)
+        tab_switch_layout.setContentsMargins(16, 16, 16, 16)
+        tab_switch_layout.setSpacing(12)
+
+        is_usb_connected = (
+            self.current_device is not None
+            and self.current_device.state == ConnectionState.CONNECTED
+            and not self.current_device.is_wireless
+        )
+        is_already_wireless = (
+            self.current_device is not None
+            and self.current_device.state == ConnectionState.CONNECTED
+            and self.current_device.is_wireless
+        )
+
+        card_switch = QFrame()
+        card_switch.setStyleSheet(
+            "background-color: #1e1f27; border: 1px solid #31333f; border-radius: 9px; padding: 14px;"
+        )
+        card_layout = QVBoxLayout(card_switch)
+        card_layout.setSpacing(10)
+
+        if is_usb_connected:
+            dev_name = self.current_device.display_name if self.current_device else "Android Device"
+            card_layout.addWidget(QLabel(f"<span style='color: #10b981; font-weight: bold;'>🔌 USB Device Connected:</span> <b style='color: #ffffff;'>{dev_name}</b>"))
+
+            ip_row = QHBoxLayout()
+            ip_row.addWidget(QLabel("Phone Wi-Fi IP:"))
+            self.txt_usb_ip = QLineEdit()
+            self.txt_usb_ip.setPlaceholderText("Auto-detecting...")
+            # Query auto-detected IP
+            detected_ip = self.adb.get_device_ip(self.current_device.serial if self.current_device else None)
+            if detected_ip:
+                self.txt_usb_ip.setText(detected_ip)
+            else:
+                saved_ip = self.settings.value("last_wifi_ip", "")
+                if saved_ip:
+                    self.txt_usb_ip.setText(saved_ip)
+            ip_row.addWidget(self.txt_usb_ip)
+            card_layout.addLayout(ip_row)
+
+            self.btn_switch = QPushButton("⚡ Switch to Wi-Fi Mode (One-Click)")
+            self.btn_switch.setObjectName("wifiActionBtn")
+            self.btn_switch.setFixedHeight(36)
+            self.btn_switch.clicked.connect(self.on_switch_clicked)
+            card_layout.addWidget(self.btn_switch)
+
+            hint = QLabel(
+                "👉 <b>One-Click Setup:</b> Enables wireless mode on your phone and connects your Mac.<br>"
+                "<b>You can safely unplug the USB cable immediately after clicking!</b>"
+            )
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color: #9ca3af; font-size: 12px; margin-top: 4px;")
+            card_layout.addWidget(hint)
+
+        elif is_already_wireless:
+            dev_name = self.current_device.display_name if self.current_device else "Android Device"
+            card_layout.addWidget(QLabel(f"<span style='color: #10b981; font-weight: bold;'>🟢 Active Wi-Fi Connection:</span> <b style='color: #ffffff;'>{dev_name}</b>"))
+            info_lbl = QLabel("You are currently managing this device wirelessly over Wi-Fi without any USB cable!")
+            info_lbl.setStyleSheet("color: #d1d5db; font-size: 13px;")
+            card_layout.addWidget(info_lbl)
+
+            self.btn_disconnect_active = QPushButton("🔌 Disconnect Wireless Session")
+            self.btn_disconnect_active.setObjectName("dangerActionBtn")
+            self.btn_disconnect_active.clicked.connect(self.on_direct_disconnect_clicked)
+            card_layout.addWidget(self.btn_disconnect_active)
+
+        else:
+            no_usb_title = QLabel("<b style='color: #fbbf24; font-size: 14px;'>🔌 No USB Phone Connected</b>")
+            card_layout.addWidget(no_usb_title)
+            no_usb_desc = QLabel(
+                "To use <b>One-Click Switch</b>, connect your phone via USB cable once with USB Debugging turned ON.<br><br>"
+                "If your phone was already configured for wireless mode earlier or you know its IP address, "
+                "switch to the <b>Direct Connect</b> tab to connect wirelessly without plugging in."
+            )
+            no_usb_desc.setWordWrap(True)
+            no_usb_desc.setStyleSheet("color: #9ca3af; font-size: 12px;")
+            card_layout.addWidget(no_usb_desc)
+
+        tab_switch_layout.addWidget(card_switch)
+        tab_switch_layout.addStretch()
+        self.tabs.addTab(tab_switch, "⚡ One-Click Switch")
+
+        # --- TAB 2: 🔗 Direct Connect / Reconnect ---
+        tab_direct = QWidget()
+        tab_direct_layout = QVBoxLayout(tab_direct)
+        tab_direct_layout.setContentsMargins(16, 16, 16, 16)
+        tab_direct_layout.setSpacing(12)
+
+        card_direct = QFrame()
+        card_direct.setStyleSheet(
+            "background-color: #1e1f27; border: 1px solid #31333f; border-radius: 9px; padding: 14px;"
+        )
+        card_direct_layout = QVBoxLayout(card_direct)
+        card_direct_layout.setSpacing(10)
+
+        card_direct_layout.addWidget(QLabel("<b style='color: #ffffff;'>Connect by IP Address:</b>"))
+
+        row_direct = QHBoxLayout()
+        row_direct.addWidget(QLabel("Phone IP:"))
+        self.txt_direct_ip = QLineEdit()
+        self.txt_direct_ip.setPlaceholderText("e.g. 192.168.1.45")
+        saved_ip = self.settings.value("last_wifi_ip", "")
+        if saved_ip:
+            self.txt_direct_ip.setText(saved_ip)
+        row_direct.addWidget(self.txt_direct_ip, 3)
+
+        row_direct.addWidget(QLabel("Port:"))
+        self.txt_direct_port = QLineEdit()
+        self.txt_direct_port.setFixedWidth(70)
+        self.txt_direct_port.setText(self.settings.value("last_wifi_port", "5555"))
+        row_direct.addWidget(self.txt_direct_port, 1)
+        card_direct_layout.addLayout(row_direct)
+
+        btns_row = QHBoxLayout()
+        self.btn_direct_connect = QPushButton("⚡ Connect Wirelessly")
+        self.btn_direct_connect.setObjectName("wifiActionBtn")
+        self.btn_direct_connect.clicked.connect(self.on_direct_connect_clicked)
+        btns_row.addWidget(self.btn_direct_connect)
+
+        self.btn_disconnect_all = QPushButton("Disconnect All")
+        self.btn_disconnect_all.clicked.connect(self.on_direct_disconnect_clicked)
+        btns_row.addWidget(self.btn_disconnect_all)
+        card_direct_layout.addLayout(btns_row)
+
+        direct_tip = QLabel(
+            "💡 <b>Tip:</b> If your phone's IP changes when reconnecting to Wi-Fi, you can find the current IP on your phone in "
+            "<b>Settings ➔ About Phone ➔ Status ➔ IP Address</b>."
+        )
+        direct_tip.setWordWrap(True)
+        direct_tip.setStyleSheet("color: #9ca3af; font-size: 12px;")
+        card_direct_layout.addWidget(direct_tip)
+
+        tab_direct_layout.addWidget(card_direct)
+        tab_direct_layout.addStretch()
+        self.tabs.addTab(tab_direct, "🔗 Direct Connect")
+
+        # --- TAB 3: 📱 Cable-Free Pairing (Android 11+) ---
+        tab_pair = QWidget()
+        tab_pair_layout = QVBoxLayout(tab_pair)
+        tab_pair_layout.setContentsMargins(16, 16, 16, 16)
+        tab_pair_layout.setSpacing(12)
+
+        card_pair = QFrame()
+        card_pair.setStyleSheet(
+            "background-color: #1e1f27; border: 1px solid #31333f; border-radius: 9px; padding: 14px;"
+        )
+        card_pair_layout = QVBoxLayout(card_pair)
+        card_pair_layout.setSpacing(10)
+
+        card_pair_layout.addWidget(QLabel("<b style='color: #ffffff;'>Pair Device Wirelessly (No Cable Required):</b>"))
+
+        pair_row1 = QHBoxLayout()
+        pair_row1.addWidget(QLabel("Pairing IP & Port:"))
+        self.txt_pair_host = QLineEdit()
+        self.txt_pair_host.setPlaceholderText("e.g. 192.168.1.45:38475")
+        pair_row1.addWidget(self.txt_pair_host)
+        card_pair_layout.addLayout(pair_row1)
+
+        pair_row2 = QHBoxLayout()
+        pair_row2.addWidget(QLabel("6-Digit Pairing Code:"))
+        self.txt_pair_code = QLineEdit()
+        self.txt_pair_code.setPlaceholderText("e.g. 123456")
+        pair_row2.addWidget(self.txt_pair_code)
+        card_pair_layout.addLayout(pair_row2)
+
+        self.btn_pair = QPushButton("Pair Device")
+        self.btn_pair.setObjectName("primaryActionBtn")
+        self.btn_pair.clicked.connect(self.on_pair_clicked)
+        card_pair_layout.addWidget(self.btn_pair)
+
+        pair_steps = QLabel(
+            "1. On phone: <b>Settings ➔ Developer Options ➔ Wireless Debugging</b> (toggle ON).<br>"
+            "2. Tap <b>'Wireless debugging'</b> ➔ tap <b>'Pair device with pairing code'</b>.<br>"
+            "3. Enter the Pairing IP:Port and 6-digit code shown on your phone screen above, then click Pair."
+        )
+        pair_steps.setWordWrap(True)
+        pair_steps.setStyleSheet("color: #9ca3af; font-size: 12px;")
+        card_pair_layout.addWidget(pair_steps)
+
+        tab_pair_layout.addWidget(card_pair)
+        tab_pair_layout.addStretch()
+        self.tabs.addTab(tab_pair, "📱 Cable-Free Pairing")
+
+        # Status & Progress Area
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("font-size: 13px; font-weight: 500; min-height: 22px;")
+        layout.addWidget(self.status_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)  # Animated marquee
+        self.progress_bar.setFixedHeight(6)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+
+        # Bottom Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        btn_layout.addWidget(btn_close)
+        layout.addLayout(btn_layout)
+
+    def on_switch_clicked(self):
+        target_ip = self.txt_usb_ip.text().strip()
+        serial = self.current_device.serial if self.current_device else None
+        self._start_worker(
+            WirelessWorker.OP_SWITCH_USB_TO_WIFI,
+            serial=serial,
+            ip=target_ip or None,
+            port=5555,
+        )
+
+    def on_direct_connect_clicked(self):
+        ip = self.txt_direct_ip.text().strip()
+        if not ip:
+            self.status_label.setText("<span style='color: #ef4444;'>Please enter an IP address.</span>")
+            return
+        port_str = self.txt_direct_port.text().strip() or "5555"
+        try:
+            port = int(port_str)
+        except ValueError:
+            port = 5555
+        self._start_worker(
+            WirelessWorker.OP_CONNECT,
+            ip=ip,
+            port=port,
+        )
+
+    def on_direct_disconnect_clicked(self):
+        self._start_worker(WirelessWorker.OP_DISCONNECT)
+
+    def on_pair_clicked(self):
+        host = self.txt_pair_host.text().strip()
+        code = self.txt_pair_code.text().strip()
+        if not host or not code:
+            self.status_label.setText("<span style='color: #ef4444;'>Host:port and pairing code are required.</span>")
+            return
+        self._start_worker(
+            WirelessWorker.OP_PAIR,
+            ip=host,
+            pair_code=code,
+        )
+
+    def _start_worker(self, op: str, **kwargs):
+        self._set_ui_busy(True)
+        self.progress_bar.setVisible(True)
+        self.status_label.setText("⏳ Connecting...")
+
+        self._worker = WirelessWorker(self.adb, op, **kwargs)
+        self._worker.progress.connect(self.on_worker_progress)
+        self._worker.finished.connect(self.on_worker_finished)
+        self._worker.start()
+
+    def _set_ui_busy(self, busy: bool):
+        self.tabs.setEnabled(not busy)
+
+    def on_worker_progress(self, msg: str):
+        self.status_label.setText(f"⏳ {msg}")
+
+    def on_worker_finished(self, success: bool, msg: str):
+        self._set_ui_busy(False)
+        self.progress_bar.setVisible(False)
+
+        if success:
+            self.status_label.setText(f"<span style='color: #10b981;'>{msg}</span>")
+
+            # Save IP for fast reconnects
+            ip_to_save = getattr(self._worker, "ip", None)
+            if ip_to_save and ":" in ip_to_save:
+                ip_only = ip_to_save.split(":")[0]
+                self.settings.setValue("last_wifi_ip", ip_only)
+            elif ip_to_save:
+                self.settings.setValue("last_wifi_ip", ip_to_save)
+
+            target = f"{self._worker.ip}:{self._worker.port}" if self._worker and self._worker.ip else ""
+            self.connection_succeeded.emit(target)
+
+            if self._worker and self._worker.operation == WirelessWorker.OP_SWITCH_USB_TO_WIFI:
+                QMessageBox.information(
+                    self,
+                    "Wireless Mode Activated!",
+                    "🎉 Android File Manager is now connected to your phone over Wi-Fi!\n\n"
+                    "👉 You can now safely UNPLUG your USB cable and continue browsing or transferring files wirelessly.",
+                )
+                self.accept()
+        else:
+            self.status_label.setText(f"<span style='color: #ef4444;'>❌ {msg}</span>")
+
+
 class NewFolderDialog(QDialog):
     """Modern dialog to create a new folder with clean validation."""
 
@@ -261,6 +601,103 @@ class NewFolderDialog(QDialog):
 
     def get_folder_name(self) -> str:
         return self.name_edit.text().strip()
+
+
+def get_mac_volumes() -> List[Tuple[str, str, bool]]:
+    """
+    Discover all mounted external volumes on macOS:
+    Returns list of (display_label, absolute_path, is_removable).
+    e.g. [('💾 SD', '/Volumes/SD', True), ('💽 USB_DRIVE', '/Volumes/USB_DRIVE', True)]
+    """
+    volumes = []
+    seen = set()
+
+    if os.path.exists("/Volumes") and os.path.isdir("/Volumes"):
+        try:
+            for item in sorted(os.listdir("/Volumes")):
+                p = os.path.join("/Volumes", item)
+                if os.path.islink(p) and os.path.realpath(p) == "/":
+                    continue
+                if item.startswith(".") or item in (
+                    "Recovery", "Preboot", "VM", "Update", "xarts", "iSCPreboot", "Hardware"
+                ):
+                    continue
+                if os.path.isdir(p) and p not in seen:
+                    seen.add(p)
+                    item_lower = item.lower()
+                    if "sd" in item_lower or "card" in item_lower:
+                        icon = "💾"
+                    elif "usb" in item_lower or "flash" in item_lower or "thumb" in item_lower:
+                        icon = "🔌"
+                    else:
+                        icon = "💽"
+                    display = f"{icon} {item}"
+                    volumes.append((display, p, True))
+        except Exception:
+            pass
+
+    return volumes
+
+
+def normalize_local_path(path: str) -> str:
+    """Normalize local macOS path supporting ~, Volumes, and drive names."""
+    if not path:
+        return str(Path.home())
+    clean = path.strip()
+    if not clean:
+        return str(Path.home())
+
+    if clean in ("~", "home", "Home", "home/"):
+        return str(Path.home())
+    if clean.startswith("~/"):
+        return os.path.expanduser(clean)
+
+    if clean in ("Volumes", "/Volumes", "volumes", "/volumes"):
+        return "/Volumes"
+
+    if not clean.startswith("/"):
+        vol_path = os.path.join("/Volumes", clean)
+        if os.path.exists(vol_path) and os.path.isdir(vol_path):
+            return vol_path
+
+        if os.path.exists("/Volumes"):
+            for v_name in os.listdir("/Volumes"):
+                if v_name.lower() == clean.lower():
+                    return os.path.join("/Volumes", v_name)
+
+        home_sub = Path.home() / clean
+        if home_sub.exists():
+            return str(home_sub)
+
+    return os.path.abspath(os.path.expanduser(clean))
+
+
+def format_display_local_path(path: str) -> str:
+    """Format local path for user-friendly display (e.g. '💾 SD / Documents' or '~/Downloads')."""
+    if not path:
+        return "~"
+    clean = os.path.abspath(path.strip())
+
+    if clean in ("/Volumes", "/Volumes/"):
+        return "📂 All Volumes"
+
+    if clean.startswith("/Volumes/"):
+        rel = clean[len("/Volumes/"):].strip()
+        parts = [p.strip() for p in rel.split("/") if p.strip()]
+        if parts:
+            vol_name = parts[0]
+            icon = "💾" if ("sd" in vol_name.lower() or "card" in vol_name.lower()) else "💽"
+            sub = parts[1:]
+            return f"{icon} {vol_name}" + (" / " + " / ".join(sub) if sub else "")
+
+    home_str = str(Path.home())
+    if clean == home_str:
+        return "~"
+    if clean.startswith(f"{home_str}/"):
+        rel = clean[len(home_str) + 1:].strip()
+        return f"~/{rel}"
+
+    return clean
 
 
 class PathBar(QWidget):
@@ -337,7 +774,7 @@ class PathBar(QWidget):
                 self.history.append(clean)
                 self.history_index = len(self.history) - 1
 
-        display_str = format_display_remote_path(clean) if self.is_remote else clean
+        display_str = format_display_remote_path(clean) if self.is_remote else format_display_local_path(clean)
         self.path_edit.setText(display_str)
         self.update_nav_buttons()
 
@@ -345,16 +782,16 @@ class PathBar(QWidget):
         self.btn_back.setEnabled(self.history_index > 0)
         self.btn_forward.setEnabled(self.history_index < len(self.history) - 1)
         if self.is_remote:
-            cur = self.current_path
-            self.btn_up.setEnabled(cur not in (ANDROID_INTERNAL_STORAGE, f"{ANDROID_INTERNAL_STORAGE}/", "/"))
+            cur = self.current_path.rstrip("/")
+            self.btn_up.setEnabled(cur not in ("/storage", "/", ""))
         else:
-            cur = self.current_path
+            cur = self.current_path.rstrip("/")
             self.btn_up.setEnabled(cur not in ("/", ""))
 
     def on_path_entered(self):
         raw = self.path_edit.text().strip()
         if raw:
-            target = normalize_remote_path(raw) if self.is_remote else raw
+            target = normalize_remote_path(raw) if self.is_remote else normalize_local_path(raw)
             self.navigate_requested.emit(target)
 
     def go_back(self):
@@ -362,7 +799,7 @@ class PathBar(QWidget):
             self.history_index -= 1
             target = self.history[self.history_index]
             self._current_path = target
-            display_str = format_display_remote_path(target) if self.is_remote else target
+            display_str = format_display_remote_path(target) if self.is_remote else format_display_local_path(target)
             self.path_edit.setText(display_str)
             self.update_nav_buttons()
             self.navigate_requested.emit(target)
@@ -372,22 +809,28 @@ class PathBar(QWidget):
             self.history_index += 1
             target = self.history[self.history_index]
             self._current_path = target
-            display_str = format_display_remote_path(target) if self.is_remote else target
+            display_str = format_display_remote_path(target) if self.is_remote else format_display_local_path(target)
             self.path_edit.setText(display_str)
             self.update_nav_buttons()
             self.navigate_requested.emit(target)
 
     def go_up(self):
-        cur = self.current_path
+        cur = self.current_path.rstrip("/")
         if self.is_remote:
-            if cur in (ANDROID_INTERNAL_STORAGE, f"{ANDROID_INTERNAL_STORAGE}/", "/"):
+            if not cur or cur in ("/storage", "/", ""):
                 return
-            parts = cur.rstrip("/").rsplit("/", 1)
-            parent_dir = parts[0] if parts[0] else ANDROID_INTERNAL_STORAGE
+            if cur in (ANDROID_INTERNAL_STORAGE, f"{ANDROID_INTERNAL_STORAGE}"):
+                # Navigating up from Internal Storage root reveals all mounted storage roots
+                self.navigate_requested.emit("/storage")
+                return
+            parts = cur.rsplit("/", 1)
+            parent_dir = parts[0] if parts[0] else "/storage"
             self.navigate_requested.emit(parent_dir)
         else:
-            cur = cur.rstrip("/")
-            if not cur or cur == "/":
+            if not cur or cur in ("/", ""):
+                return
+            if cur in ("/Volumes", "/Volumes/"):
+                self.navigate_requested.emit("/")
                 return
             parts = cur.rsplit("/", 1)
             parent_dir = parts[0] if parts[0] else "/"
@@ -471,6 +914,14 @@ class FilePane(QFrame):
 
         header_layout.addStretch()
 
+        if not self.is_remote:
+            self.btn_pane_drives = QPushButton("💾 Drives")
+            self.btn_pane_drives.setObjectName("navBtn")
+            self.btn_pane_drives.setToolTip("Quick access to SD card, USB drives and mounted Mac volumes")
+            self.btn_pane_drives.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.btn_pane_drives.clicked.connect(self.show_drives_menu)
+            header_layout.addWidget(self.btn_pane_drives)
+
         self.btn_pane_new_folder = QPushButton("➕ New Folder")
         self.btn_pane_new_folder.setObjectName("navBtn")
         self.btn_pane_new_folder.setToolTip("Create a new folder in this location")
@@ -493,40 +944,13 @@ class FilePane(QFrame):
         layout.addWidget(self.path_bar)
 
         # 3. Horizontal Quick Shortcut Pills
-        shortcuts_layout = QHBoxLayout()
-        shortcuts_layout.setContentsMargins(0, 2, 0, 2)
-        shortcuts_layout.setSpacing(6)
-
-        if is_remote:
-            shortcut_data = [
-                ("📱 Internal Storage", ANDROID_INTERNAL_STORAGE),
-                ("📥 Download", f"{ANDROID_INTERNAL_STORAGE}/Download"),
-                ("📸 DCIM", f"{ANDROID_INTERNAL_STORAGE}/DCIM"),
-                ("🖼️ Pictures", f"{ANDROID_INTERNAL_STORAGE}/Pictures"),
-                ("📄 Documents", f"{ANDROID_INTERNAL_STORAGE}/Documents"),
-                ("🎵 Music", f"{ANDROID_INTERNAL_STORAGE}/Music"),
-                ("🎬 Movies", f"{ANDROID_INTERNAL_STORAGE}/Movies"),
-            ]
-        else:
-            home = Path.home()
-            shortcut_data = [
-                ("🏠 Home", str(home)),
-                ("📥 Downloads", str(home / "Downloads")),
-                ("🖥️ Desktop", str(home / "Desktop")),
-                ("📄 Documents", str(home / "Documents")),
-                ("🖼️ Pictures", str(home / "Pictures")),
-                ("🎵 Music", str(home / "Music")),
-            ]
-
-        for label, target_path in shortcut_data:
-            btn = QPushButton(label)
-            btn.setObjectName("shortcutPill")
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(lambda checked=False, p=target_path: self.path_bar.navigate_requested.emit(p))
-            shortcuts_layout.addWidget(btn)
-
-        shortcuts_layout.addStretch()
-        layout.addLayout(shortcuts_layout)
+        self.shortcuts_layout = QHBoxLayout()
+        self.shortcuts_layout.setContentsMargins(0, 2, 0, 2)
+        self.shortcuts_layout.setSpacing(6)
+        self._remote_volumes: List[StorageVolume] = []
+        self._shortcut_buttons: List[QPushButton] = []
+        self.rebuild_shortcuts()
+        layout.addLayout(self.shortcuts_layout)
 
         # 4. Table Model and Proxy
         if is_remote:
@@ -631,6 +1055,184 @@ class FilePane(QFrame):
             self.footer_label.setText(f"{total} items ({selected} selected)")
         else:
             self.footer_label.setText(f"{total} items")
+
+    def set_storage_volumes(self, volumes: List[StorageVolume]):
+        """Update discovered storage volumes (e.g. SD Card, USB OTG) and rebuild shortcut pills."""
+        self._remote_volumes = volumes or []
+        if self.is_remote:
+            self.rebuild_shortcuts()
+
+    def _resolve_shortcut_target(self, folder_name: str) -> str:
+        """Resolve standard folders against active storage root (Internal Storage or SD Card)."""
+        cur = self.current_path.rstrip("/")
+        # If currently inside an external volume /storage/<UUID>/...
+        if cur.startswith("/storage/") and not cur.startswith("/storage/emulated") and not cur.startswith("/storage/self"):
+            parts = cur.split("/")
+            if len(parts) >= 3 and parts[2]:
+                vol_base = f"/storage/{parts[2]}"
+                return f"{vol_base}/{folder_name}"
+        return f"{ANDROID_INTERNAL_STORAGE}/{folder_name}"
+
+    def rebuild_shortcuts(self):
+        """Build or rebuild horizontal quick shortcut pills."""
+        # Clear existing shortcuts
+        while self.shortcuts_layout.count() > 0:
+            item = self.shortcuts_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._shortcut_buttons.clear()
+
+        if self.is_remote:
+            # 1. Primary volume
+            btn_internal = QPushButton("📱 Internal Storage")
+            btn_internal.setObjectName("shortcutPill")
+            btn_internal.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_internal.clicked.connect(lambda: self.path_bar.navigate_requested.emit(ANDROID_INTERNAL_STORAGE))
+            self.shortcuts_layout.addWidget(btn_internal)
+            self._shortcut_buttons.append(btn_internal)
+
+            # 2. External volumes (MicroSD / USB OTG)
+            external_vols = [v for v in self._remote_volumes if v.is_removable]
+            if external_vols:
+                for v in external_vols:
+                    btn_sd = QPushButton(f"💾 {v.name}")
+                    btn_sd.setObjectName("shortcutPill")
+                    btn_sd.setCursor(Qt.CursorShape.PointingHandCursor)
+                    p = v.path
+                    btn_sd.clicked.connect(lambda checked=False, target=p: self.path_bar.navigate_requested.emit(target))
+                    self.shortcuts_layout.addWidget(btn_sd)
+                    self._shortcut_buttons.append(btn_sd)
+            else:
+                # Fallback SD card button that jumps to /storage or scans
+                btn_sd = QPushButton("💾 SD Card")
+                btn_sd.setObjectName("shortcutPill")
+                btn_sd.setToolTip("Open SD Card or browse all mounted storage points (/storage)")
+                btn_sd.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_sd.clicked.connect(self._on_sd_card_pill_clicked)
+                self.shortcuts_layout.addWidget(btn_sd)
+                self._shortcut_buttons.append(btn_sd)
+
+            # 3. All storage root pill
+            btn_all = QPushButton("📂 All Storage")
+            btn_all.setObjectName("shortcutPill")
+            btn_all.setToolTip("Browse all storage roots (/storage)")
+            btn_all.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_all.clicked.connect(lambda: self.path_bar.navigate_requested.emit("/storage"))
+            self.shortcuts_layout.addWidget(btn_all)
+            self._shortcut_buttons.append(btn_all)
+
+            # 4. Standard Android folders (context-aware: uses active storage volume)
+            folders = [
+                ("📥 Download", "Download"),
+                ("📸 DCIM", "DCIM"),
+                ("🖼️ Pictures", "Pictures"),
+                ("📄 Documents", "Documents"),
+                ("🎵 Music", "Music"),
+                ("🎬 Movies", "Movies"),
+            ]
+            for label, f_name in folders:
+                btn = QPushButton(label)
+                btn.setObjectName("shortcutPill")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                fn = f_name
+                btn.clicked.connect(lambda checked=False, name=fn: self.path_bar.navigate_requested.emit(self._resolve_shortcut_target(name)))
+                self.shortcuts_layout.addWidget(btn)
+                self._shortcut_buttons.append(btn)
+        else:
+            # 1. External mounted drives on macOS (SD card, USB drives, etc.)
+            mac_vols = get_mac_volumes()
+            for label, target_path, _ in mac_vols:
+                btn = QPushButton(label)
+                btn.setObjectName("shortcutPill")
+                btn.setToolTip(f"Open Mac volume: {target_path}")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                p = target_path
+                btn.clicked.connect(lambda checked=False, target=p: self.path_bar.navigate_requested.emit(target))
+                self.shortcuts_layout.addWidget(btn)
+                self._shortcut_buttons.append(btn)
+
+            # 2. Volumes directory pill
+            btn_vols = QPushButton("📂 Volumes")
+            btn_vols.setObjectName("shortcutPill")
+            btn_vols.setToolTip("Browse all mounted Mac external drives and SD cards (/Volumes)")
+            btn_vols.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_vols.clicked.connect(lambda: self.path_bar.navigate_requested.emit("/Volumes"))
+            self.shortcuts_layout.addWidget(btn_vols)
+            self._shortcut_buttons.append(btn_vols)
+
+            # 3. Standard user home folders
+            home = Path.home()
+            local_shortcuts = [
+                ("🏠 Home", str(home)),
+                ("📥 Downloads", str(home / "Downloads")),
+                ("🖥️ Desktop", str(home / "Desktop")),
+                ("📄 Documents", str(home / "Documents")),
+                ("🖼️ Pictures", str(home / "Pictures")),
+                ("🎵 Music", str(home / "Music")),
+            ]
+            for label, target_path in local_shortcuts:
+                btn = QPushButton(label)
+                btn.setObjectName("shortcutPill")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                p = target_path
+                btn.clicked.connect(lambda checked=False, target=p: self.path_bar.navigate_requested.emit(target))
+                self.shortcuts_layout.addWidget(btn)
+                self._shortcut_buttons.append(btn)
+
+        self.shortcuts_layout.addStretch()
+
+    def show_drives_menu(self):
+        """Show popup menu listing Mac external drives (SD card, USB drives) and Volumes."""
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #26272e;
+                color: #ffffff;
+                border: 1px solid #3d3e4a;
+                border-radius: 8px;
+                padding: 6px;
+                font-size: 12px;
+            }
+            QMenu::item {
+                padding: 6px 14px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #3b82f6;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #3d3e4a;
+                margin: 4px 0;
+            }
+        """)
+        mac_vols = get_mac_volumes()
+        if mac_vols:
+            act_header = menu.addAction("Mounted External Drives on Mac:")
+            act_header.setEnabled(False)
+            for label, p, _ in mac_vols:
+                act = menu.addAction(f"{label}  ({p})")
+                act.triggered.connect(lambda checked=False, target=p: self.path_bar.navigate_requested.emit(target))
+            menu.addSeparator()
+
+        act_vols = menu.addAction("📂 Browse All /Volumes")
+        act_vols.triggered.connect(lambda: self.path_bar.navigate_requested.emit("/Volumes"))
+
+        act_root = menu.addAction("🖥️ Macintosh HD (Root /)")
+        act_root.triggered.connect(lambda: self.path_bar.navigate_requested.emit("/"))
+
+        if hasattr(self, "btn_pane_drives"):
+            pos = self.btn_pane_drives.mapToGlobal(QPoint(0, self.btn_pane_drives.height() + 2))
+        else:
+            pos = self.mapToGlobal(QPoint(10, 30))
+        menu.exec(pos)
+
+    def _on_sd_card_pill_clicked(self):
+        external_vols = [v for v in self._remote_volumes if v.is_removable]
+        if external_vols:
+            self.path_bar.navigate_requested.emit(external_vols[0].path)
+        else:
+            self.path_bar.navigate_requested.emit("/storage")
 
 
 class TransferProgressDialog(QDialog):

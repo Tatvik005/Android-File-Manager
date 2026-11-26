@@ -35,10 +35,27 @@ class DeviceInfo:
     raw_info: str = ""
 
     @property
+    def is_wireless(self) -> bool:
+        """Check if device is connected via Wi-Fi (IP:port format)."""
+        return bool(re.search(r"^\d+\.\d+\.\d+\.\d+:\d+$", self.serial))
+
+    @property
     def display_name(self) -> str:
+        tag = " 📶" if self.is_wireless else ""
         if self.model and self.model != "Android Device":
-            return f"{self.model} ({self.serial})"
-        return self.serial
+            return f"{self.model} ({self.serial}){tag}"
+        return f"{self.serial}{tag}"
+
+
+@dataclass
+class StorageVolume:
+    name: str              # e.g. "Internal Storage" or "SD Card (1234-5678)"
+    path: str              # e.g. "/storage/emulated/0" or "/storage/1234-5678"
+    is_removable: bool     # True for SD Card / USB OTG, False for Internal Storage
+    is_primary: bool       # True for Internal Storage
+    uuid: str = ""         # e.g. "1234-5678"
+    total_size: str = ""   # e.g. "64G"
+    free_size: str = ""    # e.g. "45G"
 
 
 @dataclass
@@ -114,14 +131,21 @@ ANDROID_INTERNAL_STORAGE = "/storage/emulated/0"
 
 def normalize_remote_path(path: str) -> str:
     """
-    Normalize remote Android paths, robustly aliasing 'Internal Storage'
-    (and any variations like 'Internal Storage / DCIM / Camera') or legacy '/sdcard'
-    to the actual device mount point '/storage/emulated/0/...'.
+    Normalize remote Android paths, robustly aliasing 'Internal Storage',
+    'SD Card', or legacy '/sdcard' to the actual device mount point.
     """
     if not path:
         return ANDROID_INTERNAL_STORAGE
     clean = path.strip()
     if not clean:
+        return ANDROID_INTERNAL_STORAGE
+
+    # All storage roots alias
+    if clean in ("/storage", "/storage/", "All Storage", "all storage"):
+        return "/storage"
+
+    # Emulated root -> internal storage
+    if clean in ("/storage/emulated", "/storage/emulated/", "/storage/self", "/storage/self/"):
         return ANDROID_INTERNAL_STORAGE
 
     # Exact matches for root internal storage
@@ -145,6 +169,18 @@ def normalize_remote_path(path: str) -> str:
         parts = [p.strip() for p in re.split(r"\s*[\/\\]\s*", rest) if p.strip()]
         return f"{ANDROID_INTERNAL_STORAGE}/" + "/".join(parts) if parts else ANDROID_INTERNAL_STORAGE
 
+    # Match 'SD Card' with optional UUID and path (e.g. 'SD Card / DCIM', 'SD Card (1234-5678) / DCIM')
+    match_sd = re.match(r"^SD\s*Card(?:\s*\(([A-Za-z0-9_-]+)\))?(?:\s*[\/\\]\s*|\s+)?(.*)$", clean, re.IGNORECASE)
+    if match_sd:
+        uuid = match_sd.group(1)
+        rest = match_sd.group(2).strip()
+        parts = [p.strip() for p in re.split(r"\s*[\/\\]\s*", rest) if p.strip()] if rest else []
+        if uuid:
+            base = f"/storage/{uuid}"
+        else:
+            base = "/storage"
+        return f"{base}/" + "/".join(parts) if parts else base
+
     # Match legacy /sdcard/ or /storage/self/primary/
     if clean.startswith("/sdcard/"):
         rel = clean[len("/sdcard/"):].strip()
@@ -163,7 +199,7 @@ def normalize_remote_path(path: str) -> str:
 
 
 def format_display_remote_path(path: str) -> str:
-    """Format remote path for user-friendly display (e.g. 'Internal Storage / DCIM / Camera')."""
+    """Format remote path for user-friendly display (e.g. 'Internal Storage / DCIM' or 'SD Card (1234-5678) / DCIM')."""
     if not path:
         return "Internal Storage"
     clean = path.strip()
@@ -178,6 +214,9 @@ def format_display_remote_path(path: str) -> str:
     ):
         return "Internal Storage"
 
+    if clean in ("/storage", "/storage/"):
+        return "All Storage Volumes"
+
     if clean.startswith(f"{ANDROID_INTERNAL_STORAGE}/"):
         rel = clean[len(ANDROID_INTERNAL_STORAGE) + 1:].strip()
         parts = [p.strip() for p in rel.split("/") if p.strip()]
@@ -190,6 +229,17 @@ def format_display_remote_path(path: str) -> str:
         rel = clean[len("/storage/self/primary/"):].strip()
         parts = [p.strip() for p in rel.split("/") if p.strip()]
         return "Internal Storage / " + " / ".join(parts) if parts else "Internal Storage"
+
+    # External storage: /storage/<UUID>/...
+    if clean.startswith("/storage/"):
+        rel = clean[len("/storage/"):].strip()
+        parts = [p.strip() for p in rel.split("/") if p.strip()]
+        if parts:
+            first = parts[0]
+            if first not in ("emulated", "self"):
+                card_title = f"SD Card ({first})" if re.match(r"^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$", first) else f"External Storage ({first})"
+                sub_parts = parts[1:]
+                return card_title + (" / " + " / ".join(sub_parts) if sub_parts else "")
 
     return clean
 
@@ -679,3 +729,243 @@ class AdbManager:
         except Exception:
             pass
         return None
+
+    def get_storage_volumes(self, serial: Optional[str] = None) -> List[StorageVolume]:
+        """
+        Discover all mounted storage volumes on the Android device:
+        - Internal Storage (/storage/emulated/0)
+        - MicroSD cards (/storage/XXXX-XXXX)
+        - USB OTG drives (/storage/...)
+        """
+        volumes: List[StorageVolume] = []
+        seen_paths = set()
+
+        # 1. Primary Internal Storage (always present)
+        volumes.append(
+            StorageVolume(
+                name="Internal Storage",
+                path=ANDROID_INTERNAL_STORAGE,
+                is_removable=False,
+                is_primary=True,
+                uuid="primary",
+            )
+        )
+        seen_paths.add(ANDROID_INTERNAL_STORAGE)
+        seen_paths.add("/storage/emulated")
+        seen_paths.add("/storage/self")
+
+        # 2. Check StorageManager via 'sm list-volumes public'
+        try:
+            code, stdout, _ = self.run_cmd(["shell", "sm list-volumes public"], serial=serial, timeout=3.0)
+            if code == 0 and stdout:
+                for line in stdout.splitlines():
+                    # e.g. "public:179,1 mounted 1234-5678"
+                    parts = line.strip().split()
+                    if len(parts) >= 3 and parts[1] == "mounted":
+                        uuid = parts[2]
+                        v_path = f"/storage/{uuid}"
+                        if v_path not in seen_paths:
+                            seen_paths.add(v_path)
+                            volumes.append(
+                                StorageVolume(
+                                    name=f"SD Card ({uuid})",
+                                    path=v_path,
+                                    is_removable=True,
+                                    is_primary=False,
+                                    uuid=uuid,
+                                )
+                            )
+        except Exception:
+            pass
+
+        # 3. Check items in /storage directory
+        try:
+            code, stdout, _ = self.run_cmd(["shell", "ls -1 /storage"], serial=serial, timeout=3.0)
+            if code == 0 and stdout:
+                for item in stdout.splitlines():
+                    item = item.strip()
+                    if not item or item in ("emulated", "self", "knox", "container"):
+                        continue
+                    v_path = f"/storage/{item}"
+                    if v_path not in seen_paths:
+                        seen_paths.add(v_path)
+                        is_uuid = bool(re.match(r"^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$", item))
+                        name = f"SD Card ({item})" if is_uuid else f"External Storage ({item})"
+                        volumes.append(
+                            StorageVolume(
+                                name=name,
+                                path=v_path,
+                                is_removable=True,
+                                is_primary=False,
+                                uuid=item,
+                            )
+                        )
+        except Exception:
+            pass
+
+        # 4. Check /proc/mounts fallback
+        try:
+            code, stdout, _ = self.run_cmd(["shell", "cat /proc/mounts"], serial=serial, timeout=3.0)
+            if code == 0 and stdout:
+                for line in stdout.splitlines():
+                    if "/storage/" in line:
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            m = parts[1].strip()
+                            if m.startswith("/storage/") and m not in ("/storage/emulated", "/storage/self"):
+                                sub = m[len("/storage/"):].split("/")[0]
+                                if sub and sub not in ("emulated", "self", "knox"):
+                                    v_path = f"/storage/{sub}"
+                                    if v_path not in seen_paths:
+                                        seen_paths.add(v_path)
+                                        name = f"SD Card ({sub})" if re.match(r"^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$", sub) else f"External ({sub})"
+                                        volumes.append(
+                                            StorageVolume(
+                                                name=name,
+                                                path=v_path,
+                                                is_removable=True,
+                                                is_primary=False,
+                                                uuid=sub,
+                                            )
+                                        )
+        except Exception:
+            pass
+
+        # 5. Populate volume stats
+        for vol in volumes:
+            try:
+                stats = self.get_storage_stats(vol.path, serial=serial)
+                if stats:
+                    vol.total_size = stats.get("size", "")
+                    vol.free_size = stats.get("free", "")
+            except Exception:
+                pass
+
+        return volumes
+
+    def get_external_storage_path(self, serial: Optional[str] = None) -> Optional[str]:
+        """Return the path of the first external SD card or USB volume, if any."""
+        vols = self.get_storage_volumes(serial=serial)
+        for v in vols:
+            if v.is_removable:
+                return v.path
+        return None
+
+    def get_device_ip(self, serial: Optional[str] = None) -> Optional[str]:
+        """
+        Attempt to auto-detect the connected Android device's Wi-Fi IPv4 address.
+        Tries multiple standard shell methods across Android versions:
+        1. Direct return if serial is already an IP address
+        2. 'ip -f inet addr show wlan0' (and wlan1/wlan2/eth0)
+        3. 'ip route' looking for src IP
+        4. 'getprop dhcp.wlan0.ipaddress'
+        5. 'ifconfig wlan0'
+        """
+        target = serial or self.selected_serial
+        if target and re.match(r"^\d+\.\d+\.\d+\.\d+(?::\d+)?$", target):
+            return target.split(":")[0]
+
+        # 1. Interface IP address check
+        for iface in ["wlan0", "wlan1", "wlan2", "eth0"]:
+            try:
+                code, stdout, _ = self.run_cmd(["shell", f"ip -f inet addr show {iface}"], serial=serial, timeout=4.0)
+                if code == 0 and stdout:
+                    for line in stdout.splitlines():
+                        m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", line)
+                        if m:
+                            ip = m.group(1)
+                            if not ip.startswith("127.") and ip != "0.0.0.0":
+                                return ip
+            except Exception:
+                pass
+
+        # 2. IP route check (often has '... src 192.168.x.x')
+        try:
+            code, stdout, _ = self.run_cmd(["shell", "ip route"], serial=serial, timeout=4.0)
+            if code == 0 and stdout:
+                for line in stdout.splitlines():
+                    if "wlan" in line or "default" in line:
+                        m = re.search(r"src\s+(\d+\.\d+\.\d+\.\d+)", line)
+                        if m:
+                            ip = m.group(1)
+                            if not ip.startswith("127.") and ip != "0.0.0.0":
+                                return ip
+        except Exception:
+            pass
+
+        # 3. getprop DHCP system properties
+        for prop in ["dhcp.wlan0.ipaddress", "dhcp.wlan1.ipaddress"]:
+            try:
+                code, stdout, _ = self.run_cmd(["shell", f"getprop {prop}"], serial=serial, timeout=3.0)
+                if code == 0 and stdout:
+                    ip = stdout.strip()
+                    if re.match(r"^\d+\.\d+\.\d+\.\d+$", ip) and not ip.startswith("127."):
+                        return ip
+            except Exception:
+                pass
+
+        # 4. ifconfig wlan0 fallback
+        try:
+            code, stdout, _ = self.run_cmd(["shell", "ifconfig wlan0"], serial=serial, timeout=4.0)
+            if code == 0 and stdout:
+                m = re.search(r"inet\s+(?:addr:)?(\d+\.\d+\.\d+\.\d+)", stdout)
+                if m:
+                    ip = m.group(1)
+                    if not ip.startswith("127.") and ip != "0.0.0.0":
+                        return ip
+        except Exception:
+            pass
+
+        return None
+
+    def enable_tcpip(self, port: int = 5555, serial: Optional[str] = None) -> Tuple[bool, str]:
+        """
+        Switch ADB daemon on the device to listen on TCP/IP port (default 5555).
+        Equivalent to: `adb tcpip 5555`.
+        """
+        code, stdout, stderr = self.run_cmd(["tcpip", str(port)], serial=serial, timeout=10.0)
+        out = (stdout + "\n" + stderr).strip()
+        if code == 0 or "restarting in tcp mode" in out.lower():
+            return True, out or f"Restarting in TCP mode port: {port}"
+        return False, out or f"Failed to enable TCP mode on port {port}"
+
+    def connect_wireless(self, host: str, port: int = 5555) -> Tuple[bool, str]:
+        """
+        Connect to device over Wi-Fi: `adb connect <host>:<port>`.
+        """
+        clean_host = host.strip()
+        if not clean_host:
+            return False, "IP address cannot be empty"
+        target = clean_host if ":" in clean_host else f"{clean_host}:{port}"
+        code, stdout, stderr = self.run_cmd(["connect", target], serial=None, timeout=15.0)
+        out = (stdout + "\n" + stderr).strip()
+        out_lower = out.lower()
+        if "connected to" in out_lower or "already connected to" in out_lower:
+            return True, out
+        return False, out or f"Failed to connect to {target}"
+
+    def disconnect_wireless(self, target: Optional[str] = None) -> Tuple[bool, str]:
+        """
+        Disconnect wireless device: `adb disconnect [<target>]`.
+        If target is None, disconnects all active network devices.
+        """
+        cmd = ["disconnect"]
+        if target and target.strip():
+            cmd.append(target.strip())
+        code, stdout, stderr = self.run_cmd(cmd, serial=None, timeout=10.0)
+        out = (stdout + "\n" + stderr).strip()
+        return code == 0, out or "Disconnected"
+
+    def pair_wireless(self, host_port: str, pairing_code: str) -> Tuple[bool, str]:
+        """
+        Pair device using Android 11+ wireless debugging: `adb pair <host:port> <code>`.
+        """
+        clean_host = host_port.strip()
+        clean_code = pairing_code.strip()
+        if not clean_host or not clean_code:
+            return False, "Host:port and pairing code are required"
+        code, stdout, stderr = self.run_cmd(["pair", clean_host, clean_code], serial=None, timeout=15.0)
+        out = (stdout + "\n" + stderr).strip()
+        if "successfully paired" in out.lower():
+            return True, out
+        return False, out or f"Pairing failed: {out}"
